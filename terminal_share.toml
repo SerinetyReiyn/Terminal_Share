@@ -1,0 +1,20 @@
+[server]
+host = "127.0.0.1"
+port = 8765
+
+# Reserved by the wrapper as a broadcast keyword: @all
+# A participant named "all" must be rejected at config load time.
+[participants.serinety]
+role    = "human"
+display = "Serinety"
+color   = "cyan"
+
+[participants.claudia]
+role    = "claude_desktop"
+display = "Claudia"
+color   = "magenta"
+
+[participants.code]
+role    = "claude_code"
+display = "Claude Code"
+color   = "green"
