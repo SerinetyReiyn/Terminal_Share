@@ -5,3 +5,7 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+*.db
+*.db-wal
+*.db-shm
+terminal_share.db

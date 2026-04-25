@@ -29,26 +29,45 @@ The flag wins over the env var.
 ## Configuration
 
 See `terminal_share.toml` in the repo root for the full schema. The
-`[server]` block (host/port) is the only thing 1.0 actually consumes.
-The `[participants.*]` tables are validated at load time but otherwise
-parked for 1.1 (chat / `@mention` channel).
+`[server]` block sets host/port; the `[participants.*]` tables define
+who can send / receive chat and inject commands. Each participant has a
+role (`human`, `claude_desktop`, `claude_code`, or `other`), a display
+name, and a named ANSI color used for chat rendering and provenance
+comments.
 
 Validation is strict — typos in role or color names fail loud rather than
 silently coercing. A participant named `all` (case-insensitive) is
-rejected because `@all` is reserved as a future broadcast keyword.
+rejected because `all` is reserved as the chat broadcast keyword.
 Exactly one `human` participant is required if any participants are
 defined.
 
-## Smoke test
+## Tools
+
+`ps_send`, `ps_read`, `ps_status`, `ps_signal` (shell I/O) plus
+`chat_send`, `chat_inbox`, `chat_history`, `chat_participants` (chat
+layer, persisted to `./terminal_share.db`).
+
+When an LLM client calls `ps_send(text, sender)`, a colored
+`# [<sender_display> HH:MM:SS] running:` provenance comment is rendered
+into the wrapped pane immediately above the injected command, atomic
+relative to other writers. `chat_send` renders a similar comment line
+into the same pane so all three actors see the same scrollback.
+
+`ps_read(strip_ansi=True)` returns the buffer with CSI sequences
+stripped — useful for LLM consumers that want clean text instead of
+PSReadLine's per-keystroke escapes.
+
+## Smoke tests
 
 While the wrapper is running, in a second terminal:
 
 ```pwsh
-python tests/smoke_mcp.py
+python tests/smoke_mcp.py     # ps_* round-trip
+python tests/smoke_chat.py    # chat layer + ps_send atomicity
 ```
 
-Four `PASS` lines mean the round-trip is working. Each smoke command
-should also be visible in the wrapper's pane in real time.
+All `PASS` lines mean the system is healthy. Smoke commands should also
+be visible in the wrapper's pane in real time.
 
 ## MCP client config
 
@@ -116,15 +135,20 @@ can**. The threat model for 1.0 assumes a single trusted operator on a
 trusted workstation. If you don't trust co-resident processes, don't run
 this yet — auth is on the 2.0 roadmap.
 
-## What 1.0 doesn't do
+## What 1.1 doesn't do
 
-- Multiple concurrent MCP writers (no locking between them)
-- Echo provenance comments (`# [claudia 08:31] running:`)
-- "Command finished" detection via prompt sentinels
-- ANSI stripping for LLM consumers
-- Audit log / SQLite persistence
-- Auto-restart if pwsh crashes
-- Resize event forwarding (PTY stays at the default 80×24)
-- Acting as VS Code's default shell
+- Human-typed `@code hi` from the wrapped pane (modal input layer — 1.1.1)
+- "Command finished" detection via prompt sentinels (1.2)
+- Auto-restart if pwsh crashes (1.2)
+- Resize event forwarding after launch (PTY size is matched once at spawn)
+- Acting as VS Code's default shell (1.2+)
+- Authentication on the MCP endpoint (2.0)
 
-These are 1.1 / 1.2 / 2.0 territory.
+## Breaking changes from 1.0
+
+- `ps_send(text)` → `ps_send(text, sender)`. `sender` must be a
+  participant key from `terminal_share.toml`. Unknown senders return
+  `{"ok": false, "error": "unknown_sender", "name": "..."}` and don't
+  write anything.
+- `ps_read` gains a `strip_ansi: bool = False` parameter. Default
+  preserves 1.0 behavior; opt-in returns CSI-stripped text.

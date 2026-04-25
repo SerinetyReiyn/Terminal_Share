@@ -9,6 +9,7 @@ import threading
 import time
 from typing import Optional
 
+from .chat_store import ChatStore
 from .config import load_config
 from .pty_session import PtySession
 from .server import build_server
@@ -146,14 +147,18 @@ def main() -> int:
         )
         return 1
 
+    store = ChatStore("terminal_share.db")
+
     # Switch to the alternate screen buffer so PTY (row 1, col 1) aligns with
     # viewport (row 1, col 1) — without this offset, PSReadLine's absolute
     # positioning paints in the wrong rows. Restored in finally below.
     sys.stdout.write("\x1b[?1049h\x1b[H")
     sys.stdout.flush()
 
-    session = PtySession(command="pwsh.exe")
-    server = build_server(session, host=cfg.server.host, port=cfg.server.port)
+    session = PtySession(command="pwsh.exe", participants=cfg.participants)
+    server = build_server(
+        session, store, host=cfg.server.host, port=cfg.server.port,
+    )
 
     old_mode = _enable_raw_console_mode()
     stop_evt = threading.Event()
@@ -179,6 +184,7 @@ def main() -> int:
     finally:
         stop_evt.set()
         session.close()
+        store.close()
         _restore_console_mode(old_mode)
         sys.stdout.write("\x1b[?1049l")
         sys.stdout.flush()

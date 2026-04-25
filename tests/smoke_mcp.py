@@ -38,7 +38,7 @@ async def _run() -> int:
             print(("PASS" if ok else "FAIL"), "ps_status:", _format(r))
             failures += 0 if ok else 1
 
-            r = await client.call_tool("ps_send", {"text": "Get-Date"})
+            r = await client.call_tool("ps_send", {"text": "Get-Date", "sender": "code"})
             ok = not r.isError
             print(("PASS" if ok else "FAIL"), "ps_send:", _format(r))
             failures += 0 if ok else 1
