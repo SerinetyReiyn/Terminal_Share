@@ -307,6 +307,11 @@ class PtySession:
         self._modal = None
         if self._chat_store is not None:
             self._chat_store.insert_message(sender_key, target, body)
+            # Modal commits are the human's natural "I'm here" signal —
+            # she doesn't call chat_inbox, so without this her status
+            # would stay 'offline' forever and every chat_send addressed
+            # to her (or @all) would render an offline warning.
+            self._chat_store.mark_active(sender_key)
         with self._render_lock:
             self._stdout.write(b"\r\x1b[K")
             self._stdout.flush()

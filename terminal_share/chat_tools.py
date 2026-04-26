@@ -57,12 +57,22 @@ def make_chat_tools(
         """Return participant names whose status is not 'online' for the
         given chat_send recipient. For 'all', expand to every participant
         except the sender (we don't know who that is here, so return all
-        non-online and let the caller filter)."""
+        non-online and let the caller filter).
+
+        Human-role participants are skipped: they're the terminal owner,
+        always available by virtue of being at the wrapper pane. The
+        listener / heartbeat concept only applies to LLM agents that
+        poll chat_inbox. (Modal commits also call ChatStore.mark_active
+        as a belt-and-suspenders refresh, see pty_session._commit_modal.)
+        """
         if to == "all":
             return [
-                name for name in session.participants
-                if _participant_status(name) != "online"
+                name for name, p in session.participants.items()
+                if p.role != "human" and _participant_status(name) != "online"
             ]
+        target = session.participants.get(to)
+        if target is None or target.role == "human":
+            return []
         return [to] if _participant_status(to) != "online" else []
 
     def _emit_offline_warning(recipients: list[str]) -> None:

@@ -119,6 +119,31 @@ def test_chat_send_to_all_no_warning_when_all_online(setup) -> None:
     assert session.system_renders == []
 
 
+def test_chat_send_to_human_no_warning_even_when_offline(setup) -> None:
+    """1.2.1: humans don't have a listener concept — no offline warning
+    should fire for them, even if their last_seen_at is None."""
+    session, _, _, tools = setup
+    # serinety has never inboxed (and won't — humans don't poll)
+    r = tools["chat_send"](sender="claudia", text="hi", to="serinety")
+    assert r["ok"]
+    assert session.system_renders == []  # no warning despite offline
+
+
+def test_chat_send_to_all_skips_humans_in_warning(setup) -> None:
+    """1.2.1: humans never appear in the offline-recipients list, so
+    @all sends don't produce a warning if all *non-human* recipients
+    are online (or if the only offline ones are humans)."""
+    session, _, _, tools = setup
+    # Bring claudia and code online; leave serinety untouched (human, offline)
+    _run(tools["chat_inbox"](reader="claudia"))
+    _run(tools["chat_inbox"](reader="code"))
+    session.system_renders.clear()
+    r = tools["chat_send"](sender="claudia", text="hi", to="all")
+    assert r["ok"]
+    # No warning — only "offline" participant is serinety (human), filtered
+    assert session.system_renders == []
+
+
 def test_chat_send_unknown_sender_rejected(setup) -> None:
     session, _, _, tools = setup
     r = tools["chat_send"](sender="bob", text="hi", to="code")

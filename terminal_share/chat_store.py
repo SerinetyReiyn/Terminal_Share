@@ -156,6 +156,12 @@ class ChatStore:
     def last_seen_at(self, reader: str) -> float | None:
         return self._last_seen.get(reader)
 
+    def mark_active(self, name: str) -> None:
+        """Refresh `name`'s heartbeat without going through the inbox path.
+        Used for humans, who don't poll chat_inbox — modal commits are
+        their natural 'I'm here' signal."""
+        self._last_seen[name] = time.time()
+
     # --- lifecycle ---------------------------------------------------------
 
     def close(self) -> None:

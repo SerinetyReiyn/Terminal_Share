@@ -210,6 +210,16 @@ def test_inbox_mark_read_false_keeps_messages_unread(store: ChatStore) -> None:
     assert len(msgs2) == 1  # still unread
 
 
+def test_mark_active_updates_last_seen(store: ChatStore) -> None:
+    assert store.last_seen_at("serinety") is None
+    before = time.time()
+    store.mark_active("serinety")
+    after = time.time()
+    seen = store.last_seen_at("serinety")
+    assert seen is not None
+    assert before <= seen <= after
+
+
 def test_inbox_long_poll_does_not_block_writers(store: ChatStore) -> None:
     """Long-poll must release the connection lock during the wait so other
     threads can insert. Verify by writing while a reader is waiting."""
