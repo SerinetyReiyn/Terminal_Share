@@ -2,8 +2,16 @@
 host = "127.0.0.1"
 port = 8765
 
-# Reserved by the wrapper as a broadcast keyword: @all
-# A participant named "all" must be rejected at config load time.
+# Status thresholds for the live-agent loop (Phase 1.2). A participant's
+# status is computed from the timestamp of their most recent chat_inbox
+# call: "online" if within online_seconds, "stale" between online_seconds
+# and stale_seconds, "offline" beyond. Defaults below match the spec.
+[heartbeat]
+online_seconds = 90
+stale_seconds  = 300
+
+# Reserved keywords (rejected as participant names): "all" (broadcast),
+# "system" (control-plane sender used by agent_stop).
 [participants.serinety]
 role    = "human"
 display = "Serinety"
@@ -18,3 +26,54 @@ color   = "magenta"
 role    = "claude_code"
 display = "Claude Code"
 color   = "green"
+
+# ---------------------------------------------------------------------------
+# Per-agent runtime tuning. The wrapper does NOT enforce these values —
+# they are honor-system contracts each agent's runtime reads and respects
+# (see prompts/phase_1_2_live_agent_loop.md §4). Listed here for
+# documentation and so agents can read consistent defaults.
+# ---------------------------------------------------------------------------
+
+[agents.claudia]
+soft_warn_pct             = 75    # post a heads-up at this context fill
+hard_exit_pct             = 90    # auto-exit at this fill
+hard_msg_count            = 50    # belt-and-suspenders message-count cap
+poll_seconds              = 25    # long-poll interval (5..25)
+broadcast_cooldown_seconds = 60   # global per-agent broadcast cooldown
+chat_calls_per_hour       = 240   # soft cap on chat_send rate
+
+[agents.code]
+soft_warn_pct             = 80    # higher — 1M context + auto-compaction
+hard_exit_pct             = 95
+hard_msg_count            = 200
+poll_seconds              = 25
+broadcast_cooldown_seconds = 60
+chat_calls_per_hour       = 600
+
+[agents.code.shell]
+commands_per_minute       = 10
+max_chars_per_command     = 4000
+deny_patterns = [
+    # Unix-style — defense in depth (pwsh can launch wsl bash)
+    "rm\\s+-rf",
+    ":(){ :\\|:& };:",
+    "shutdown",
+    "reboot",
+    "mkfs",
+    "dd\\s+if=.*of=/dev/",
+    # Pwsh / Windows native
+    "Remove-Item.*-Recurse.*-Force",
+    "rm\\s+.*-r.*-force",
+    "Stop-Computer",
+    "Restart-Computer",
+    "shutdown(\\.exe)?\\s+/[srl]",
+    "Format-Volume",
+    "Clear-Disk",
+    "Initialize-Disk",
+    "Remove-Partition",
+    "New-Partition.*-AssignDriveLetter",
+    "Reset-ComputerMachinePassword",
+    "Set-ExecutionPolicy.*Unrestricted",
+    "Invoke-Expression.*Invoke-WebRequest",
+    "iex.*iwr",
+]

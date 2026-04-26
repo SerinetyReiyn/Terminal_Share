@@ -180,7 +180,9 @@ def main() -> int:
         stdout=sys.stdout.buffer,
     )
     server = build_server(
-        session, store, host=cfg.server.host, port=cfg.server.port,
+        session, store,
+        host=cfg.server.host, port=cfg.server.port,
+        heartbeat=cfg.heartbeat,
     )
 
     old_mode = _enable_raw_console_mode()

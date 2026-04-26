@@ -194,3 +194,62 @@ def test_shipped_example_file_loads() -> None:
     cfg = load_config(here / "terminal_share.toml")
     assert cfg.server.port == 8765
     assert "serinety" in cfg.participants
+
+
+# --- 1.2 [heartbeat] block + reserved 'system' name ---------------------
+
+def test_heartbeat_defaults_when_section_missing(tmp_path: Path) -> None:
+    p = _write(tmp_path, "")
+    cfg = load_config(p)
+    assert cfg.heartbeat.online_seconds == 90
+    assert cfg.heartbeat.stale_seconds == 300
+
+
+def test_heartbeat_explicit_values(tmp_path: Path) -> None:
+    p = _write(tmp_path, """
+        [heartbeat]
+        online_seconds = 30
+        stale_seconds = 120
+    """)
+    cfg = load_config(p)
+    assert cfg.heartbeat.online_seconds == 30
+    assert cfg.heartbeat.stale_seconds == 120
+
+
+def test_heartbeat_online_must_be_less_than_stale(tmp_path: Path) -> None:
+    p = _write(tmp_path, """
+        [heartbeat]
+        online_seconds = 200
+        stale_seconds = 100
+    """)
+    with pytest.raises(ConfigError, match="online_seconds"):
+        load_config(p)
+
+
+def test_heartbeat_negative_value_rejected(tmp_path: Path) -> None:
+    p = _write(tmp_path, """
+        [heartbeat]
+        online_seconds = -1
+    """)
+    with pytest.raises(ConfigError, match="positive"):
+        load_config(p)
+
+
+def test_heartbeat_wrong_type_rejected(tmp_path: Path) -> None:
+    p = _write(tmp_path, """
+        [heartbeat]
+        online_seconds = "ninety"
+    """)
+    with pytest.raises(ConfigError, match="int"):
+        load_config(p)
+
+
+def test_reserved_name_system_rejected(tmp_path: Path) -> None:
+    """'system' is reserved as the agent_stop sender — can't be a participant."""
+    p = _write(tmp_path, """
+        [participants.system]
+        role    = "human"
+        display = "System"
+    """)
+    with pytest.raises(ConfigError, match="reserved"):
+        load_config(p)

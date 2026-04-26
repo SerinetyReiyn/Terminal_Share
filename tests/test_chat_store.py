@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 
 import pytest
 
@@ -120,3 +121,113 @@ def test_concurrent_inserts(store: ChatStore) -> None:
 
     history = store.history(limit=200)
     assert len(history) == 80
+
+
+# --- 1.2 long-poll + heartbeat -------------------------------------------
+
+def test_inbox_immediate_when_messages_present(store: ChatStore) -> None:
+    store.insert_message("claudia", "code", "hi")
+    start = time.monotonic()
+    msgs, _ = store.inbox("code", wait_seconds=10)
+    elapsed = time.monotonic() - start
+    assert len(msgs) == 1
+    assert elapsed < 0.5  # didn't wait, returned at once
+
+
+def test_inbox_long_poll_returns_empty_at_timeout(store: ChatStore) -> None:
+    start = time.monotonic()
+    msgs, remaining = store.inbox("code", wait_seconds=1.0)
+    elapsed = time.monotonic() - start
+    assert msgs == []
+    assert remaining == 0
+    assert 0.9 <= elapsed <= 2.5  # ~1s timeout
+
+
+def test_inbox_long_poll_wakes_on_insert(store: ChatStore) -> None:
+    """Reader blocks in long-poll; another thread inserts; reader returns
+    promptly without waiting the full timeout."""
+    def delayed_insert():
+        time.sleep(0.3)
+        store.insert_message("claudia", "code", "hi")
+
+    threading.Thread(target=delayed_insert, daemon=True).start()
+    start = time.monotonic()
+    msgs, _ = store.inbox("code", wait_seconds=10)
+    elapsed = time.monotonic() - start
+    assert len(msgs) == 1
+    assert msgs[0]["text"] == "hi"
+    assert elapsed < 2.0  # well under the 10s cap
+
+
+def test_inbox_long_poll_wakes_on_broadcast(store: ChatStore) -> None:
+    """A broadcast (recipient='all') wakes a reader waiting on a different
+    name."""
+    def delayed_insert():
+        time.sleep(0.3)
+        store.insert_message("claudia", "all", "team")
+
+    threading.Thread(target=delayed_insert, daemon=True).start()
+    start = time.monotonic()
+    msgs, _ = store.inbox("code", wait_seconds=10)
+    elapsed = time.monotonic() - start
+    assert len(msgs) == 1
+    assert msgs[0]["recipient"] == "all"
+    assert elapsed < 2.0
+
+
+def test_inbox_wait_seconds_capped(store: ChatStore) -> None:
+    """Values > MAX_WAIT_SECONDS get clamped server-side."""
+    start = time.monotonic()
+    store.inbox("code", wait_seconds=100)
+    elapsed = time.monotonic() - start
+    assert elapsed < 30  # capped well below 100
+
+
+def test_last_seen_at_none_before_first_inbox(store: ChatStore) -> None:
+    assert store.last_seen_at("code") is None
+
+
+def test_last_seen_at_updated_on_inbox(store: ChatStore) -> None:
+    before = time.time()
+    store.inbox("code")
+    after = time.time()
+    seen = store.last_seen_at("code")
+    assert seen is not None
+    assert before <= seen <= after
+
+
+def test_last_seen_at_per_reader(store: ChatStore) -> None:
+    store.inbox("claudia")
+    assert store.last_seen_at("claudia") is not None
+    assert store.last_seen_at("code") is None
+
+
+def test_inbox_mark_read_false_keeps_messages_unread(store: ChatStore) -> None:
+    store.insert_message("claudia", "code", "hi")
+    msgs1, _ = store.inbox("code", mark_read=False)
+    msgs2, _ = store.inbox("code", mark_read=False)
+    assert len(msgs1) == 1
+    assert len(msgs2) == 1  # still unread
+
+
+def test_inbox_long_poll_does_not_block_writers(store: ChatStore) -> None:
+    """Long-poll must release the connection lock during the wait so other
+    threads can insert. Verify by writing while a reader is waiting."""
+    insert_done = threading.Event()
+
+    def reader():
+        store.inbox("code", wait_seconds=2.0)
+
+    def writer():
+        time.sleep(0.2)
+        store.insert_message("claudia", "code", "hi")
+        insert_done.set()
+
+    rt = threading.Thread(target=reader, daemon=True)
+    wt = threading.Thread(target=writer, daemon=True)
+    rt.start()
+    wt.start()
+    # Insert should complete well before the 2s reader timeout.
+    assert insert_done.wait(timeout=1.0)
+    rt.join(timeout=3.0)
+    wt.join(timeout=1.0)

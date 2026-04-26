@@ -382,6 +382,37 @@ class PtySession:
             with self._stdin_lock:
                 self._proc.write(line + "\r")
 
+    def render_system_comment(self, lines: list[str]) -> None:
+        """Render one or more `# [system HH:MM:SS] <line>` comments to the
+        wrapped pane. Used by chat_send when @-ing an offline participant
+        (1.2 §3.4). Plain text, no ANSI. Modal-aware: behaves like
+        render_chat_line — bypasses PTY when modal is active so
+        PSReadLine's tracked prompt row stays put.
+
+        All lines emitted under one _render_lock acquisition so the
+        multi-line warning can't be split by another writer.
+        """
+        if not lines:
+            return
+        ts = time.strftime("%H:%M:%S")
+        rendered = "".join(
+            f"# [system {ts}] {_flatten_for_comment(line)}\r" for line in lines
+        )
+        with self._render_lock:
+            if self._modal is not None and self._stdout is not None:
+                payload = rendered.replace("\r", "\r\n").encode("utf-8")
+                try:
+                    self._stdout.write(b"\r\x1b[K")
+                    self._stdout.write(payload)
+                    self._stdout.flush()
+                except Exception:
+                    pass
+                self.append_output(payload)
+                self._modal.render_locked()
+            else:
+                with self._stdin_lock:
+                    self._proc.write(rendered)
+
     def send_with_provenance(self, sender_key: str, command_text: str) -> int:
         """Inject a command preceded by a plain provenance comment.
 

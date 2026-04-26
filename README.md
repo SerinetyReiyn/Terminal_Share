@@ -43,18 +43,23 @@ defined.
 
 ## Tools
 
-`ps_send`, `ps_read`, `ps_status`, `ps_signal` (shell I/O) plus
-`chat_send`, `chat_inbox`, `chat_history`, `chat_participants` (chat
-layer, persisted to `./terminal_share.db`).
+Shell I/O (1.0):
+- `ps_send(text, sender)` — inject a command preceded by a provenance comment
+- `ps_read(since_seq, max_bytes, strip_ansi)` — read PTY buffer
+- `ps_status` — wrapper liveness + version
+- `ps_signal(name)` — currently `ctrl_c` only
 
-When an LLM client calls `ps_send(text, sender)`, a colored
-`# [<sender_display> HH:MM:SS] running:` provenance comment is rendered
-into the wrapped pane immediately above the injected command, atomic
-relative to other writers. `chat_send` renders a similar comment line
-into the same pane so all three actors see the same scrollback.
+Chat (1.1):
+- `chat_send(sender, text, to)` — persist a message + render a `# [<sender> -> <to> HH:MM:SS] ...` comment in the wrapped pane
+- `chat_inbox(reader, wait_seconds, max, mark_read)` — fetch unread messages; long-poll up to 25s when `wait_seconds > 0`; refreshes the reader's heartbeat
+- `chat_history(limit)` — last N messages, no side effects
+- `chat_participants` — config + per-participant `last_seen_at` and `status` (`online | stale | offline`)
+
+Agent control (1.2):
+- `agent_stop(participant)` — synthetic `/exit` for the receiving agent's loop. Does not render to the PTY. Returns `was_online` so callers know whether the stop arrived live or queued.
 
 `ps_read(strip_ansi=True)` returns the buffer with CSI sequences
-stripped — useful for LLM consumers that want clean text instead of
+stripped — useful for agent consumers that want clean text instead of
 PSReadLine's per-keystroke escapes.
 
 ## Smoke tests
@@ -64,6 +69,7 @@ While the wrapper is running, in a second terminal:
 ```pwsh
 python tests/smoke_mcp.py     # ps_* round-trip
 python tests/smoke_chat.py    # chat layer + ps_send atomicity
+python tests/smoke_agents.py  # 1.2 agent-loop primitives
 ```
 
 All `PASS` lines mean the system is healthy. Smoke commands should also
@@ -151,15 +157,39 @@ prompt; type the body, then:
 Use `@all <body>` to broadcast. Unknown target names show an inline
 error in the modal prompt — backspace and fix.
 
-## What 1.1 doesn't do
+## Live agent loop (1.2)
 
-- "Command finished" detection via prompt sentinels (1.2)
-- Auto-restart if pwsh crashes (1.2)
-- Resize event forwarding after launch (PTY size is matched once at spawn)
+The chat tools support a polling-loop posture where a participant's
+runtime (Claudia's Claude.ai session, Code's CLI session) blocks on
+`chat_inbox(wait_seconds=25)`, responds via `chat_send`, repeats. The
+wrapper exposes the primitives; the loop discipline (skip pre-session
+backlog, broadcast cooldowns, voluntary exit on context exhaustion,
+shell-command budget for operator agents) is honored agent-side.
+
+When an `@<name>` message addresses a participant whose status is
+`stale` or `offline`, the wrapper renders a `# [system HH:MM:SS] @<name>
+not currently listening — message queued.` comment in the wrapped pane
+so the human knows the message landed in the queue but no live response
+is coming this minute.
+
+`agent_stop(participant)` is the wrapper's lever for forced shutdown:
+inserts a synthetic `/exit` from sender `system` that the receiving
+agent's loop catches via the same magic-command parser that handles
+user-typed `@<name> /exit`.
+
+See `prompts/phase_1_2_live_agent_loop.md` for the full behavioral
+contract and threat model.
+
+## What 1.2 doesn't do
+
 - Per-sender color in the wrapped pane for incoming chat lines (chat
   metadata still includes color in structured returns; in-pane color
-  deferred to 1.2)
-- Acting as VS Code's default shell (1.2+)
+  deferred to 1.2.1)
+- Win32-input parsing for arrow keys (deferred — see 1.1.1 ship report)
+- Wrapper-enforced shell-command policy (agent-side only; honor system)
+- Auto-restart if pwsh crashes
+- Resize event forwarding after launch (PTY size matched once at spawn)
+- Acting as VS Code's default shell
 - Authentication on the MCP endpoint (2.0)
 
 ## Breaking changes from 1.0

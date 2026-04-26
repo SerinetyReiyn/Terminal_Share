@@ -15,10 +15,12 @@ ALLOWED_COLORS: frozenset[str] = frozenset({
     "bright_yellow", "bright_blue", "bright_red",
 })
 
-RESERVED_NAMES: frozenset[str] = frozenset({"all"})
+RESERVED_NAMES: frozenset[str] = frozenset({"all", "system"})
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+DEFAULT_ONLINE_SECONDS = 90
+DEFAULT_STALE_SECONDS = 300
 
 
 class ConfigError(ValueError):
@@ -40,8 +42,17 @@ class Participant:
 
 
 @dataclass(frozen=True)
+class Heartbeat:
+    """Status thresholds: online if last_seen_at within online_seconds,
+    stale between online_seconds and stale_seconds, offline beyond."""
+    online_seconds: int = DEFAULT_ONLINE_SECONDS
+    stale_seconds: int = DEFAULT_STALE_SECONDS
+
+
+@dataclass(frozen=True)
 class Config:
     server: Server
+    heartbeat: Heartbeat = field(default_factory=Heartbeat)
     participants: dict[str, Participant] = field(default_factory=dict)
 
 
@@ -55,7 +66,8 @@ def load_config(path: str | Path) -> Config:
 def _parse(data: dict[str, Any]) -> Config:
     server = _parse_server(data.get("server", {}))
     participants = _parse_participants(data.get("participants", {}))
-    return Config(server=server, participants=participants)
+    heartbeat = _parse_heartbeat(data.get("heartbeat", {}))
+    return Config(server=server, heartbeat=heartbeat, participants=participants)
 
 
 def _parse_server(raw: Any) -> Server:
@@ -72,6 +84,23 @@ def _parse_server(raw: Any) -> Server:
     return Server(host=host, port=port)
 
 
+def _parse_heartbeat(raw: Any) -> Heartbeat:
+    if not isinstance(raw, dict):
+        raise ConfigError("[heartbeat] must be a table")
+    online = raw.get("online_seconds", DEFAULT_ONLINE_SECONDS)
+    stale = raw.get("stale_seconds", DEFAULT_STALE_SECONDS)
+    for name, value in (("online_seconds", online), ("stale_seconds", stale)):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConfigError(f"[heartbeat].{name} must be an int, got {type(value).__name__}")
+        if value <= 0:
+            raise ConfigError(f"[heartbeat].{name} must be positive (got {value})")
+    if online >= stale:
+        raise ConfigError(
+            f"[heartbeat].online_seconds ({online}) must be less than stale_seconds ({stale})"
+        )
+    return Heartbeat(online_seconds=online, stale_seconds=stale)
+
+
 def _parse_participants(raw: Any) -> dict[str, Participant]:
     if not isinstance(raw, dict):
         raise ConfigError("[participants] must be a table")
@@ -79,7 +108,7 @@ def _parse_participants(raw: Any) -> dict[str, Participant]:
     for name, body in raw.items():
         if name.lower() in RESERVED_NAMES:
             raise ConfigError(
-                f"participant name '{name}' is reserved (collides with @all broadcast)"
+                f"participant name '{name}' is reserved (collides with @all broadcast or system control)"
             )
         if not isinstance(body, dict):
             raise ConfigError(f"[participants.{name}] must be a table")
