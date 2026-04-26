@@ -9,3 +9,4 @@ build/
 *.db-wal
 *.db-shm
 terminal_share.db
+terminal_share.stdin.log

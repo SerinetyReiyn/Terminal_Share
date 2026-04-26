@@ -12,12 +12,30 @@ import asyncio
 import json
 import re
 import sys
+import time
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 
 _PROVENANCE_RE = re.compile(r"\[(Claudia|Claude Code) \d{2}:\d{2}:\d{2}\] running:")
+
+
+async def _poll_buffer(client, seq_before: int, needles: list[str], timeout_s: float = 8.0) -> str:
+    """Read and re-read the buffer until every needle appears or timeout.
+    PSReadLine repaints inputs char-by-char; with two concurrent ps_sends
+    it can take several seconds for both outputs to fully echo back."""
+    deadline = time.monotonic() + timeout_s
+    text = ""
+    while time.monotonic() < deadline:
+        buf = _data(await client.call_tool("ps_read", {
+            "since_seq": seq_before, "max_bytes": 262144, "strip_ansi": True,
+        }))
+        text = buf["data"]
+        if all(n in text for n in needles):
+            return text
+        await asyncio.sleep(0.3)
+    return text
 
 
 URL = "http://127.0.0.1:8765/mcp"
@@ -132,7 +150,7 @@ async def _run() -> int:
             # Drain any pending PSReadLine echo from earlier chat_sends before
             # capturing seq_before so we don't pick up stale "[Claude Code"
             # text from prior broadcasts.
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.5)
             status_before = _data(await client.call_tool("ps_status", {}))
             seq_before = status_before["buffer_tail_seq"]
 
@@ -140,12 +158,12 @@ async def _run() -> int:
                 client.call_tool("ps_send", {"text": "echo A_FROM_CLAUDIA", "sender": "claudia"}),
                 client.call_tool("ps_send", {"text": "echo B_FROM_CODE", "sender": "code"}),
             )
-            await asyncio.sleep(1.0)
 
-            buf = _data(await client.call_tool("ps_read", {
-                "since_seq": seq_before, "max_bytes": 131072, "strip_ansi": True,
-            }))
-            text = buf["data"]
+            text = await _poll_buffer(
+                client, seq_before,
+                needles=["A_FROM_CLAUDIA", "B_FROM_CODE"],
+                timeout_s=8.0,
+            )
 
             prov_senders = set(_PROVENANCE_RE.findall(text))
             both_outputs = "A_FROM_CLAUDIA" in text and "B_FROM_CODE" in text
@@ -159,17 +177,17 @@ async def _run() -> int:
 
             # Verify pair ordering: each sender's provenance precedes its
             # command token in the buffer (no command-before-provenance).
+            # Anchor on the COMPLETE provenance regex — the buffer has
+            # PSReadLine partial-repaints of the chat_send "[<sender> ->"
+            # line which would otherwise match any "[<sender>" find.
             order_ok = True
             for sender, token in (("Claudia", "A_FROM_CLAUDIA"), ("Claude Code", "B_FROM_CODE")):
-                prov_pos = text.find(f"[{sender}")
-                # Walk forward to the matching "running:" within ~120 chars.
-                while prov_pos != -1:
-                    nearby = text[prov_pos:prov_pos + 120]
-                    if "running:" in nearby:
-                        break
-                    prov_pos = text.find(f"[{sender}", prov_pos + 1)
+                pattern = re.compile(
+                    rf"\[{re.escape(sender)} \d{{2}}:\d{{2}}:\d{{2}}\] running:"
+                )
+                m = pattern.search(text)
                 cmd_pos = text.find(token)
-                if prov_pos < 0 or cmd_pos < 0 or prov_pos >= cmd_pos:
+                if m is None or cmd_pos < 0 or m.start() >= cmd_pos:
                     order_ok = False
                     break
             failures += 0 if _check(

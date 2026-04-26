@@ -135,12 +135,30 @@ can**. The threat model for 1.0 assumes a single trusted operator on a
 trusted workstation. If you don't trust co-resident processes, don't run
 this yet — auth is on the 2.0 roadmap.
 
+## Modal `@`-chat (1.1.1)
+
+Type `@<participant> <body>` at column 0 of a fresh pwsh prompt and the
+wrapper enters a modal chat-input mode. The `@` and everything after it
+is intercepted before pwsh sees them, so there's no ParserError. A
+sender-colored prompt like `[chat -> @code]: ...` renders below pwsh's
+prompt; type the body, then:
+
+- **Enter** commits the message via the same `chat_send` path the LLM
+  clients use
+- **Esc** or **Ctrl-C** aborts without sending
+- **Backspace** past the `@` aborts cleanly
+
+Use `@all <body>` to broadcast. Unknown target names show an inline
+error in the modal prompt — backspace and fix.
+
 ## What 1.1 doesn't do
 
-- Human-typed `@code hi` from the wrapped pane (modal input layer — 1.1.1)
 - "Command finished" detection via prompt sentinels (1.2)
 - Auto-restart if pwsh crashes (1.2)
 - Resize event forwarding after launch (PTY size is matched once at spawn)
+- Per-sender color in the wrapped pane for incoming chat lines (chat
+  metadata still includes color in structured returns; in-pane color
+  deferred to 1.2)
 - Acting as VS Code's default shell (1.2+)
 - Authentication on the MCP endpoint (2.0)
 

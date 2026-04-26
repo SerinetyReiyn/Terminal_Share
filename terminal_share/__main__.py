@@ -10,9 +10,19 @@ import time
 from typing import Optional
 
 from .chat_store import ChatStore
-from .config import load_config
+from .config import Participant, load_config
 from .pty_session import PtySession
 from .server import build_server
+
+
+def _find_human(participants) -> Optional[Participant]:
+    """Returns the (single) human participant, or None if none defined.
+    Config validation in 1.0 already enforces "exactly one human if any
+    participants are defined", so this picks one or returns None cleanly."""
+    for p in participants.values():
+        if p.role == "human":
+            return p
+    return None
 
 
 def _silence_server_logs() -> None:
@@ -95,13 +105,12 @@ def _stdin_pump(session: PtySession, stop_evt: threading.Event) -> None:
         if not data:
             return
         try:
-            session.send(data)
+            session.handle_user_input(data)
         except Exception:
             return
 
 
 def _pty_pump(session: PtySession, stop_evt: threading.Event) -> None:
-    out = sys.stdout.buffer
     while not stop_evt.is_set():
         if not session.alive:
             return
@@ -111,12 +120,7 @@ def _pty_pump(session: PtySession, stop_evt: threading.Event) -> None:
                 return
             time.sleep(0.005)
             continue
-        try:
-            out.write(data)
-            out.flush()
-        except Exception:
-            pass
-        session.append_output(data)
+        session.emit_pty_output(data)
 
 
 def main() -> int:
@@ -148,14 +152,33 @@ def main() -> int:
         return 1
 
     store = ChatStore("terminal_share.db")
+    sender_self = _find_human(cfg.participants)
+    if sender_self is None and cfg.participants:
+        # Config validation already prevents zero-humans-when-participants-defined,
+        # but if both are absent (empty config) the modal feature is just disabled.
+        print(
+            "terminal_share: no human participant in config — "
+            "modal @-chat input disabled.",
+            file=sys.stderr,
+        )
 
     # Switch to the alternate screen buffer so PTY (row 1, col 1) aligns with
     # viewport (row 1, col 1) — without this offset, PSReadLine's absolute
     # positioning paints in the wrong rows. Restored in finally below.
-    sys.stdout.write("\x1b[?1049h\x1b[H")
+    # Also disable CSI 9001 (win32-input mode) in the outer terminal so
+    # keystrokes arrive as plain bytes, not CSI param wrappers — the modal
+    # trigger needs to see a literal `@` (0x40), and pwsh's startup banner
+    # may have flipped 9001 on in a prior session.
+    sys.stdout.write("\x1b[?1049h\x1b[?9001l\x1b[H")
     sys.stdout.flush()
 
-    session = PtySession(command="pwsh.exe", participants=cfg.participants)
+    session = PtySession(
+        command="pwsh.exe",
+        participants=cfg.participants,
+        chat_store=store,
+        sender_self=sender_self,
+        stdout=sys.stdout.buffer,
+    )
     server = build_server(
         session, store, host=cfg.server.host, port=cfg.server.port,
     )
