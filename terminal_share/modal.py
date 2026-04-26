@@ -7,18 +7,6 @@ from typing import IO, Mapping
 from .config import Participant
 
 
-# Foreground ANSI codes for the participant colors validated by config.py.
-# Used only for the modal prompt rendered to stdout (not through PTY), so
-# PSReadLine doesn't intercept the ESC bytes here.
-_ANSI_FG: dict[str, int] = {
-    "white": 37, "cyan": 36, "magenta": 35, "green": 32,
-    "yellow": 33, "blue": 34, "red": 31,
-    "bright_white": 97, "bright_cyan": 96, "bright_magenta": 95,
-    "bright_green": 92, "bright_yellow": 93, "bright_blue": 94,
-    "bright_red": 91,
-}
-
-
 class ModalResult(enum.Enum):
     CONTINUE = "continue"
     COMMIT = "commit"
@@ -231,10 +219,12 @@ class ModalChatInput:
         self._stdout.flush()
 
     def _build_prompt(self) -> str:
+        # Local import to avoid the pty_session <-> modal cycle at module load.
+        from .pty_session import apply_color
         target_display = self._target_buf if self._target_buf else "-"
         suffix = f" ({self._error})" if self._error else ""
-        code = _ANSI_FG.get(self._sender.color, _ANSI_FG["white"])
-        return (
-            f"\x1b[{code}m[chat -> @{target_display}{suffix}]: \x1b[0m"
-            f"{self._buffer}"
+        prefix = apply_color(
+            f"[chat -> @{target_display}{suffix}]: ",
+            self._sender.color,
         )
+        return f"{prefix}{self._buffer}"

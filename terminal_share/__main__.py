@@ -178,6 +178,7 @@ def main() -> int:
         chat_store=store,
         sender_self=sender_self,
         stdout=sys.stdout.buffer,
+        system_color=cfg.system.color,
     )
     server = build_server(
         session, store,

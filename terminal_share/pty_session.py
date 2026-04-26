@@ -21,6 +21,28 @@ from .modal import ModalChatInput, ModalResult
 # anything past it stays in the raw stream for callers who want it.
 _CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
+
+# ANSI foreground codes for the participant colors validated by config.py.
+# Used by stdout-bypass renders (modal prompt, chat lines per 1.2.2,
+# system warnings) where ANSI escapes survive because they never go
+# through PSReadLine. Provenance comments still go through the PTY
+# plain-text path — see send_with_provenance.
+ANSI_FG: dict[str, int] = {
+    "white": 37, "cyan": 36, "magenta": 35, "green": 32,
+    "yellow": 33, "blue": 34, "red": 31,
+    "bright_black": 90,
+    "bright_white": 97, "bright_cyan": 96, "bright_magenta": 95,
+    "bright_green": 92, "bright_yellow": 93, "bright_blue": 94,
+    "bright_red": 91,
+}
+
+
+def apply_color(text: str, color_name: str) -> str:
+    """Wrap text in ANSI fg color escape + reset. Falls back to white if
+    color_name isn't in ANSI_FG (config validation guarantees it will be)."""
+    code = ANSI_FG.get(color_name, ANSI_FG["white"])
+    return f"\x1b[{code}m{text}\x1b[0m"
+
 # Cap rendered chat-comment text at 4096 chars (pwsh max line is ~8190).
 # Full text always persists to the DB; this only bounds the rendered comment.
 _CHAT_TEXT_RENDER_CAP = 4096
@@ -84,6 +106,7 @@ class PtySession:
         chat_store: ChatStore | None = None,
         sender_self: Participant | None = None,
         stdout: IO[bytes] | None = None,
+        system_color: str = "bright_black",
     ) -> None:
         self._proc = PtyProcess.spawn(command, dimensions=_detect_terminal_size())
         self._render_lock = threading.Lock()
@@ -98,6 +121,7 @@ class PtySession:
         self._chat_store = chat_store
         self._sender_self = sender_self
         self._stdout = stdout
+        self._system_color = system_color
         self._chars_since_enter = 0
         # CSI input parser: 0=normal, 1=after \x1b, 2=inside \x1b[<params><final>
         self._esc_state = 0
@@ -341,18 +365,17 @@ class PtySession:
         recipient_key: str,
         text: str,
     ) -> None:
-        """Render a plain `# [...] text` comment, modal-aware.
+        """Render a sender-colored `# [...] text` comment into the wrapped
+        pane via stdout-bypass.
 
-        Modal inactive (1.1.0 path): write through PTY stdin under
-        _stdin_lock; pwsh sees it as a comment and PSReadLine paints it.
-        Plain text — color escapes can't survive PSReadLine's input
-        dispatch.
+        Per 1.2.2: chat lines always go to stdout directly, NOT through
+        the PTY. Color escapes survive because PSReadLine never sees
+        them. Modal-aware: when modal is open we wipe its line first
+        and re-render it below.
 
-        Modal active (1.1.1): wipe the modal line, write the comment
-        directly to stdout AND append to the buffer (bypassing PTY so
-        PSReadLine's tracked prompt row stays put), then re-render the
-        modal prompt below. All under one _render_lock acquisition so
-        nothing slips between wipe / comment / re-render.
+        Stdout fallback path (when self._stdout is None — non-interactive
+        or tests without a captured stdout) writes to PTY plain-text. No
+        color in that case but pwsh still sees the comment.
         """
         with self._render_lock:
             self._render_chat_line_unlocked(sender_key, recipient_key, text)
@@ -369,54 +392,70 @@ class PtySession:
         else:
             recipient_display = self._participants[recipient_key].display
         ts = time.strftime("%H:%M:%S")
-        line = (
+        body = (
             f"# [{sender.display} -> {recipient_display} {ts}] "
             f"{_flatten_for_comment(text)}"
         )
-        if self._modal is not None and self._stdout is not None:
-            payload = (line + "\r\n").encode("utf-8")
-            try:
+        colored = apply_color(body, sender.color)
+
+        if self._stdout is None:
+            # Non-interactive fallback (tests, piped stdout). Plain text
+            # via PTY so pwsh still sees the comment in its history.
+            with self._stdin_lock:
+                self._proc.write(body + "\r")
+            return
+
+        payload = (colored + "\r\n").encode("utf-8")
+        try:
+            if self._modal is not None:
                 self._stdout.write(b"\r\x1b[K")
+            self._stdout.write(payload)
+            self._stdout.flush()
+        except Exception:
+            pass
+        self.append_output(payload)
+        if self._modal is not None:
+            self._modal.render_locked()
+
+    def render_system_comment(self, lines: list[str]) -> None:
+        """Render one or more `# [system HH:MM:SS] <line>` comments to the
+        wrapped pane via stdout-bypass with the configured system color
+        (default bright_black / dim). Modal-aware: wipes modal line if
+        open, re-renders modal below.
+
+        Per 1.2.2: always stdout-bypass (no PTY path) so the system
+        color survives. Falls back to plain-text PTY only when stdout
+        is None (non-interactive / tests).
+        """
+        if not lines:
+            return
+        ts = time.strftime("%H:%M:%S")
+        plain_lines = [
+            f"# [system {ts}] {_flatten_for_comment(line)}" for line in lines
+        ]
+
+        with self._render_lock:
+            if self._stdout is None:
+                # Non-interactive fallback: PTY plain text.
+                with self._stdin_lock:
+                    self._proc.write("".join(f"{line}\r" for line in plain_lines))
+                return
+
+            colored = "".join(
+                f"{apply_color(line, self._system_color)}\r\n"
+                for line in plain_lines
+            )
+            payload = colored.encode("utf-8")
+            try:
+                if self._modal is not None:
+                    self._stdout.write(b"\r\x1b[K")
                 self._stdout.write(payload)
                 self._stdout.flush()
             except Exception:
                 pass
             self.append_output(payload)
-            self._modal.render_locked()
-        else:
-            with self._stdin_lock:
-                self._proc.write(line + "\r")
-
-    def render_system_comment(self, lines: list[str]) -> None:
-        """Render one or more `# [system HH:MM:SS] <line>` comments to the
-        wrapped pane. Used by chat_send when @-ing an offline participant
-        (1.2 §3.4). Plain text, no ANSI. Modal-aware: behaves like
-        render_chat_line — bypasses PTY when modal is active so
-        PSReadLine's tracked prompt row stays put.
-
-        All lines emitted under one _render_lock acquisition so the
-        multi-line warning can't be split by another writer.
-        """
-        if not lines:
-            return
-        ts = time.strftime("%H:%M:%S")
-        rendered = "".join(
-            f"# [system {ts}] {_flatten_for_comment(line)}\r" for line in lines
-        )
-        with self._render_lock:
-            if self._modal is not None and self._stdout is not None:
-                payload = rendered.replace("\r", "\r\n").encode("utf-8")
-                try:
-                    self._stdout.write(b"\r\x1b[K")
-                    self._stdout.write(payload)
-                    self._stdout.flush()
-                except Exception:
-                    pass
-                self.append_output(payload)
+            if self._modal is not None:
                 self._modal.render_locked()
-            else:
-                with self._stdin_lock:
-                    self._proc.write(rendered)
 
     def send_with_provenance(self, sender_key: str, command_text: str) -> int:
         """Inject a command preceded by a plain provenance comment.

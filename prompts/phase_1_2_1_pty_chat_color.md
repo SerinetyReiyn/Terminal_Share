@@ -1,7 +1,9 @@
-# Phase 1.2.1 — Per-sender PTY chat color
+# Phase 1.2.2 — Per-sender PTY chat color
 
-**Target version:** `1.2.1`
-**Builds on:** 1.2.0 (live agent loop)
+**Target version:** `1.2.2` (1.2.1 was used for the human-heartbeat patch
+that came out of the first three-actor session; this spec was drafted
+before that and kept its filename for git-history continuity.)
+**Builds on:** 1.2.1 (live agent loop + human heartbeat)
 **Status:** Ready to build. Self-contained. ~30 LoC per Code's 1.1.1 estimate.
 **Reviewer chain:** Code (primary), Serinety (final)
 **Risk class:** UX polish. No new behavior, no new threat surface.

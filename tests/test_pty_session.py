@@ -68,6 +68,29 @@ def session_with_participants(monkeypatch: pytest.MonkeyPatch) -> PtySession:
     s.close()
 
 
+@pytest.fixture
+def session_with_stdout(monkeypatch: pytest.MonkeyPatch):
+    """Session with a captured BytesIO stdout — exercises the 1.2.2
+    colored stdout-bypass path."""
+    import io
+    monkeypatch.setattr(ps_mod, "PtyProcess", _FakeProcFactory)
+    participants = {
+        "serinety": Participant(name="serinety", role="human", display="Serinety", color="cyan"),
+        "claudia": Participant(name="claudia", role="claude_desktop", display="Claudia", color="bright_magenta"),
+        "code": Participant(name="code", role="claude_code", display="Claude Code", color="bright_blue"),
+    }
+    stdout = io.BytesIO()
+    s = PtySession(
+        command="fake.exe",
+        buffer_bytes_cap=10000,
+        participants=participants,
+        stdout=stdout,
+        system_color="bright_black",
+    )
+    yield s, stdout
+    s.close()
+
+
 # --- 1.0 buffer behavior preserved -----------------------------------------
 
 def test_initial_status(session: PtySession) -> None:
@@ -271,3 +294,71 @@ def test_chat_line_format_shape(session_with_participants: PtySession) -> None:
         r"^# \[Claudia -> Claude Code \d{2}:\d{2}:\d{2}\] msg\r$",
         full,
     )
+
+
+# --- 1.2.2 colored stdout-bypass for chat lines ---------------------------
+
+def test_render_chat_line_bypasses_pty_when_stdout_present(session_with_stdout) -> None:
+    session, stdout = session_with_stdout
+    session.render_chat_line("claudia", "code", "hi")
+    # FakeProc shouldn't have been written to — no PTY path
+    assert _FakeProcFactory.last.writes == []
+    # Stdout has the colored line
+    out = stdout.getvalue().decode("utf-8")
+    assert "# [Claudia -> Claude Code" in out
+    assert "hi" in out
+
+
+def test_render_chat_line_uses_sender_color(session_with_stdout) -> None:
+    session, stdout = session_with_stdout
+    session.render_chat_line("claudia", "code", "hello")
+    out = stdout.getvalue().decode("utf-8")
+    # claudia's color is bright_magenta = ANSI 95
+    assert out.startswith("\x1b[95m")
+    assert out.rstrip("\r\n").endswith("\x1b[0m")
+
+
+def test_render_chat_line_code_color_blue(session_with_stdout) -> None:
+    session, stdout = session_with_stdout
+    session.render_chat_line("code", "claudia", "ping")
+    out = stdout.getvalue().decode("utf-8")
+    # code's color is bright_blue = ANSI 94
+    assert out.startswith("\x1b[94m")
+
+
+def test_render_chat_line_broadcast_uses_sender_color(session_with_stdout) -> None:
+    session, stdout = session_with_stdout
+    session.render_chat_line("code", "all", "broadcast")
+    out = stdout.getvalue().decode("utf-8")
+    assert out.startswith("\x1b[94m")
+    assert "Claude Code -> all" in out
+
+
+def test_render_chat_line_appends_to_buffer_too(session_with_stdout) -> None:
+    """Stdout-bypass also appends to the PTY buffer so ps_read sees it."""
+    session, stdout = session_with_stdout
+    session.render_chat_line("claudia", "code", "buffered")
+    r = session.read_since(since_seq=0)
+    assert "buffered" in r["data"]
+    assert "Claudia -> Claude Code" in r["data"]
+
+
+def test_render_system_comment_uses_system_color(session_with_stdout) -> None:
+    session, stdout = session_with_stdout
+    session.render_system_comment(["@code is offline", "  message queued"])
+    out = stdout.getvalue().decode("utf-8")
+    # system_color set to bright_black = ANSI 90 in the fixture
+    assert "\x1b[90m" in out
+    assert "@code is offline" in out
+    assert "message queued" in out
+
+
+def test_render_chat_line_falls_back_to_pty_when_no_stdout(
+    session_with_participants: PtySession,
+) -> None:
+    """Without a stdout (non-interactive / tests), fall back to plain
+    PTY write so pwsh still sees the comment."""
+    session_with_participants.render_chat_line("claudia", "code", "fallback")
+    full = "".join(_FakeProcFactory.last.writes)
+    assert "fallback" in full
+    assert "\x1b" not in full  # no color in fallback path

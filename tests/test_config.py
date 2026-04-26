@@ -253,3 +253,41 @@ def test_reserved_name_system_rejected(tmp_path: Path) -> None:
     """)
     with pytest.raises(ConfigError, match="reserved"):
         load_config(p)
+
+
+# --- 1.2.2 [system] block + bright_black color ---------------------------
+
+def test_system_color_default_when_section_missing(tmp_path: Path) -> None:
+    p = _write(tmp_path, "")
+    cfg = load_config(p)
+    assert cfg.system.color == "bright_black"
+
+
+def test_system_color_explicit(tmp_path: Path) -> None:
+    p = _write(tmp_path, """
+        [system]
+        color = "yellow"
+    """)
+    cfg = load_config(p)
+    assert cfg.system.color == "yellow"
+
+
+def test_system_color_unknown_rejected(tmp_path: Path) -> None:
+    p = _write(tmp_path, """
+        [system]
+        color = "chartreuse"
+    """)
+    with pytest.raises(ConfigError, match="color"):
+        load_config(p)
+
+
+def test_bright_black_now_allowed(tmp_path: Path) -> None:
+    """1.2.2 added bright_black to the allowed color set."""
+    p = _write(tmp_path, """
+        [participants.alice]
+        role    = "human"
+        display = "Alice"
+        color   = "bright_black"
+    """)
+    cfg = load_config(p)
+    assert cfg.participants["alice"].color == "bright_black"

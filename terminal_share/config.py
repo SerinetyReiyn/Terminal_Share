@@ -11,6 +11,7 @@ ALLOWED_ROLES: frozenset[str] = frozenset({
 
 ALLOWED_COLORS: frozenset[str] = frozenset({
     "white", "cyan", "magenta", "green", "yellow", "blue", "red",
+    "bright_black",
     "bright_white", "bright_cyan", "bright_magenta", "bright_green",
     "bright_yellow", "bright_blue", "bright_red",
 })
@@ -21,6 +22,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_ONLINE_SECONDS = 90
 DEFAULT_STALE_SECONDS = 300
+DEFAULT_SYSTEM_COLOR = "bright_black"
 
 
 class ConfigError(ValueError):
@@ -50,9 +52,17 @@ class Heartbeat:
 
 
 @dataclass(frozen=True)
+class System:
+    """Visual style for system-emitted messages (offline warnings,
+    future system events). Distinguishes them from participant chat."""
+    color: str = DEFAULT_SYSTEM_COLOR
+
+
+@dataclass(frozen=True)
 class Config:
     server: Server
     heartbeat: Heartbeat = field(default_factory=Heartbeat)
+    system: System = field(default_factory=System)
     participants: dict[str, Participant] = field(default_factory=dict)
 
 
@@ -67,7 +77,13 @@ def _parse(data: dict[str, Any]) -> Config:
     server = _parse_server(data.get("server", {}))
     participants = _parse_participants(data.get("participants", {}))
     heartbeat = _parse_heartbeat(data.get("heartbeat", {}))
-    return Config(server=server, heartbeat=heartbeat, participants=participants)
+    system = _parse_system(data.get("system", {}))
+    return Config(
+        server=server,
+        heartbeat=heartbeat,
+        system=system,
+        participants=participants,
+    )
 
 
 def _parse_server(raw: Any) -> Server:
@@ -82,6 +98,17 @@ def _parse_server(raw: Any) -> Server:
     if not 1 <= port <= 65535:
         raise ConfigError(f"[server].port {port} out of range 1..65535")
     return Server(host=host, port=port)
+
+
+def _parse_system(raw: Any) -> System:
+    if not isinstance(raw, dict):
+        raise ConfigError("[system] must be a table")
+    color = raw.get("color", DEFAULT_SYSTEM_COLOR)
+    if color not in ALLOWED_COLORS:
+        raise ConfigError(
+            f"[system].color '{color}' not in {sorted(ALLOWED_COLORS)}"
+        )
+    return System(color=color)
 
 
 def _parse_heartbeat(raw: Any) -> Heartbeat:

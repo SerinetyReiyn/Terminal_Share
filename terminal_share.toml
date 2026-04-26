@@ -10,6 +10,12 @@ port = 8765
 online_seconds = 90
 stale_seconds  = 300
 
+# Visual style for system-emitted messages (offline warnings, etc).
+# bright_black renders as dim/gray on most terminals — clearly distinct
+# from participant chat colors.
+[system]
+color = "bright_black"
+
 # Reserved keywords (rejected as participant names): "all" (broadcast),
 # "system" (control-plane sender used by agent_stop).
 [participants.serinety]
@@ -20,12 +26,12 @@ color   = "cyan"
 [participants.claudia]
 role    = "claude_desktop"
 display = "Claudia"
-color   = "magenta"
+color   = "bright_magenta"
 
 [participants.code]
 role    = "claude_code"
 display = "Claude Code"
-color   = "green"
+color   = "bright_blue"
 
 # ---------------------------------------------------------------------------
 # Per-agent runtime tuning. The wrapper does NOT enforce these values —
