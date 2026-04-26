@@ -277,6 +277,75 @@ def test_render_uses_wipe_after_first() -> None:
     stdout.seek(0)
     modal.render()
     out = stdout.getvalue()
-    # Subsequent renders use \r\x1b[K (no leading newline)
+    # Subsequent renders erase the previous render area:
+    #   1-row prompt: \r + \x1b[J (clear from cursor to end of screen)
+    #   N-row prompt: \x1b[<N-1>F + \x1b[J
+    # Either way, \x1b[J must be present.
     assert not out.startswith(b"\r\n")
-    assert b"\r\x1b[K" in out
+    assert b"\x1b[J" in out
+
+
+# --- 1.2.3 multi-row prompt handling --------------------------------------
+
+def test_single_row_prompt_tracks_one_row() -> None:
+    modal, _ = _modal()
+    modal.render()
+    assert modal._last_render_rows == 1
+
+
+def test_wide_prompt_tracks_multiple_rows(monkeypatch) -> None:
+    """When the prompt is wider than the terminal, last_render_rows
+    reflects the wrap so the next render can clear all of them."""
+    import terminal_share.modal as modal_mod
+    monkeypatch.setattr(modal_mod, "_terminal_columns", lambda default=80: 30)
+    modal, _ = _modal()
+    # Build a body long enough that the visible prompt wraps.
+    _feed(modal, "code " + ("x" * 100))
+    modal.render()
+    # Visible width ≈ "[chat -> @code]: " (17) + 100 x's = 117 chars.
+    # At width 30, that's ceil(117/30) = 4 rows.
+    assert modal._last_render_rows == 4
+
+
+def test_subsequent_render_uses_cursor_up_for_multi_row(monkeypatch) -> None:
+    """After a wrapped render, the next render must move cursor UP by
+    rows-1 lines + clear-to-end-of-screen, not just \\r + clear-line."""
+    import terminal_share.modal as modal_mod
+    monkeypatch.setattr(modal_mod, "_terminal_columns", lambda default=80: 30)
+    modal, stdout = _modal()
+    _feed(modal, "code " + ("x" * 100))
+    modal.render()  # 4 rows
+    stdout.truncate(0)
+    stdout.seek(0)
+    modal.render()
+    out = stdout.getvalue()
+    # Should begin with cursor-previous-line (\x1b[3F = up 3 rows + col 0)
+    # then erase-to-end-of-screen (\x1b[J).
+    assert out.startswith(b"\x1b[3F\x1b[J")
+
+
+def test_wipe_clears_all_rows_of_multi_row_prompt(monkeypatch) -> None:
+    import terminal_share.modal as modal_mod
+    monkeypatch.setattr(modal_mod, "_terminal_columns", lambda default=80: 30)
+    modal, stdout = _modal()
+    _feed(modal, "code " + ("x" * 100))
+    modal.render()  # 4 rows
+    stdout.truncate(0)
+    stdout.seek(0)
+    modal.wipe()
+    out = stdout.getvalue()
+    assert b"\x1b[3F" in out  # up 3 rows
+    assert b"\x1b[J" in out  # then clear to end of screen
+    # After wipe, last_render_rows resets so a future render starts clean
+    assert modal._last_render_rows == 0
+
+
+def test_wipe_handles_single_row_prompt() -> None:
+    modal, stdout = _modal()
+    modal.render()  # 1 row
+    stdout.truncate(0)
+    stdout.seek(0)
+    modal.wipe()
+    out = stdout.getvalue()
+    # 1-row case uses \r (not \x1b[F) plus \x1b[J
+    assert out.startswith(b"\r\x1b[J")

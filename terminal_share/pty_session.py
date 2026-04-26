@@ -328,7 +328,6 @@ class PtySession:
             return
 
         sender_key = self._sender_self.name
-        self._modal = None
         if self._chat_store is not None:
             self._chat_store.insert_message(sender_key, target, body)
             # Modal commits are the human's natural "I'm here" signal —
@@ -337,24 +336,24 @@ class PtySession:
             # to her (or @all) would render an offline warning.
             self._chat_store.mark_active(sender_key)
         with self._render_lock:
-            self._stdout.write(b"\r\x1b[K")
-            self._stdout.flush()
+            modal.wipe()
+            self._modal = None  # clear AFTER wipe so multi-row erase fires
             self._render_chat_line_unlocked(sender_key, target, body)
         self._chars_since_enter = 0
 
     def _abort_modal(self) -> None:
-        if self._modal is None:
+        modal = self._modal
+        if modal is None:
             return
-        self._modal = None
         with self._render_lock:
             if self._stdout is not None:
                 try:
-                    self._stdout.write(b"\r\x1b[K")
-                    self._stdout.flush()
+                    modal.wipe()
                 except Exception:
                     pass
             with self._stdin_lock:
                 self._proc.write("\r")
+        self._modal = None
         self._chars_since_enter = 0
 
     # --- chat / provenance rendering -------------------------------------
@@ -408,7 +407,9 @@ class PtySession:
         payload = (colored + "\r\n").encode("utf-8")
         try:
             if self._modal is not None:
-                self._stdout.write(b"\r\x1b[K")
+                # Multi-row aware wipe — handles wrapped prompts that
+                # span more than one terminal row (1.2.3).
+                self._modal.wipe()
             self._stdout.write(payload)
             self._stdout.flush()
         except Exception:
@@ -448,7 +449,7 @@ class PtySession:
             payload = colored.encode("utf-8")
             try:
                 if self._modal is not None:
-                    self._stdout.write(b"\r\x1b[K")
+                    self._modal.wipe()
                 self._stdout.write(payload)
                 self._stdout.flush()
             except Exception:

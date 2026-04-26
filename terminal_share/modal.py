@@ -1,10 +1,32 @@
 from __future__ import annotations
 
 import enum
+import os
+import re
 import threading
 from typing import IO, Mapping
 
 from .config import Participant
+
+
+# Local copy of the CSI-strip regex so we can compute visible width
+# without importing from pty_session (which would create a cycle).
+_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _visible_width(s: str) -> int:
+    """Displayed character count of s, ignoring ANSI escapes. Used to
+    compute how many terminal rows the modal prompt will occupy."""
+    return len(_CSI_RE.sub("", s))
+
+
+def _terminal_columns(default: int = 80) -> int:
+    """Outer terminal width. Re-fetched each render so a mid-session
+    pane resize is picked up automatically."""
+    try:
+        return os.get_terminal_size().columns
+    except OSError:
+        return default
 
 
 class ModalResult(enum.Enum):
@@ -62,6 +84,11 @@ class ModalChatInput:
         self._stage: str = "target"
         self._error: str | None = None
         self._first_render = True
+        # Number of terminal rows the previous render occupied. The
+        # next render moves the cursor up by this many rows minus one
+        # and clears to end of screen, so a wrapped multi-row prompt
+        # is fully replaced rather than just the last row.
+        self._last_render_rows = 0
         self._esc_state = self._ESC_NONE
 
     # --- public state inspection (for tests / commit handoff) -------------
@@ -208,14 +235,39 @@ class ModalChatInput:
             # First time: drop to a fresh line below pwsh's prompt.
             self._stdout.write(b"\r\n")
             self._first_render = False
-        self._stdout.write(b"\r\x1b[K")
-        line = self._build_prompt().encode("utf-8")
-        self._stdout.write(line)
+        else:
+            self._erase_previous_render()
+
+        prompt = self._build_prompt()
+        self._stdout.write(prompt.encode("utf-8"))
         self._stdout.flush()
 
+        width = _terminal_columns()
+        visible = _visible_width(prompt)
+        # ceil division; min 1 so we don't underflow on empty prompts
+        self._last_render_rows = max(1, (visible + width - 1) // width)
+
+    def _erase_previous_render(self) -> None:
+        """Move cursor to the start of the previous render's first row
+        and clear from there to end of screen. Handles wrapped
+        multi-row prompts correctly — `\\r\\x1b[K` alone only erases
+        the row the cursor's currently on, leaving stale content above
+        when a long body has wrapped."""
+        rows = self._last_render_rows
+        if rows > 1:
+            # \x1b[<n>F = Cursor Previous Line: up n rows + col 0
+            self._stdout.write(f"\x1b[{rows - 1}F".encode("utf-8"))
+        else:
+            self._stdout.write(b"\r")
+        # \x1b[J = Erase from cursor to end of screen.
+        self._stdout.write(b"\x1b[J")
+
     def wipe(self) -> None:
-        """Clear the modal line. Caller must hold _render_lock."""
-        self._stdout.write(b"\r\x1b[K")
+        """Clear the modal area entirely. Caller must hold _render_lock.
+        Used when the modal is committing/aborting and the next chat
+        line will be rendered on top of where the modal was."""
+        self._erase_previous_render()
+        self._last_render_rows = 0
         self._stdout.flush()
 
     def _build_prompt(self) -> str:
